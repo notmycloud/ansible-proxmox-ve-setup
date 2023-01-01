@@ -1,0 +1,45 @@
+---
+- name: 'Disable Enterprise PVE repo'
+  ansible.builtin.apt_repository:
+    repo: 'deb https://enterprise.proxmox.com/debian/pve {{ item }} pve-enterprise'
+    state: 'absent'
+  with_list:
+    - stretch
+    - buster
+    - bullseye
+    - "{{ ansible_distribution_release }}"
+
+- name: 'Enable Community PVE current repo'
+  ansible.builtin.apt_repository:
+    repo: 'deb [arch=amd64] http://download.proxmox.com/debian/pve {{ ansible_distribution_release }} pve-no-subscription'
+    state: 'present'
+
+- name: Get Proxmox version for backup file
+  ansible.builtin.set_fact:
+    proxmox_version: "{{ ansible_facts.packages['proxmox-ve'][0].version }}"
+
+- name: Check if subscription fix is already applied
+  ansible.builtin.command: grep -Fq 'if (res === null || res === undefined || !res || false) {' {{ proxmoxlib }}
+  register: check_fixed
+  failed_when: check_fixed.rc > 1
+  check_mode: false
+  ignore_errors: true
+  changed_when: false
+
+- name: Backup up original file
+  ansible.builtin.copy:
+    remote_src: true
+    src: "{{ proxmox_ve_lib_file }}"
+    dest: "{{ proxmox_ve_lib_file }}.bak-{{ proxmox_version }}"
+    force: false
+    mode: '0644'
+  when: check_fixed.rc == 1
+
+- name: Modify line which performs license check
+  ansible.builtin.replace:
+    path: "{{ proxmox_ve_lib_file }}"
+    regexp: res\s*\.data\.status\.toLowerCase\(\) !== 'active'
+    replace: "false"
+  notify:
+    - Restart pveproxy
+  when: check_fixed.rc == 1
