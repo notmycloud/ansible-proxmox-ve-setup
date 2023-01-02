@@ -1,7 +1,7 @@
 ---
-- ansible.builtin.include_task: pve_community.yaml
-  when:
-    - not proxmox_ve_enterprise is undefined or not proxmox_ve_enterprise
+- name: Include community tasks only if not running on a licensed host.
+  ansible.builtin.include_tasks: "pve_community.yaml"
+  when: not proxmox_ve_enterprise is undefined or not proxmox_ve_enterprise
 
 - name: Install the Dark Theme
   ansible.builtin.include_role:
