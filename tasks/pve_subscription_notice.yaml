@@ -1,0 +1,63 @@
+---
+- name: Get Proxmox version for backup file
+  ansible.builtin.set_fact:
+    proxmox_version: "{{ ansible_facts.packages['proxmox-ve'][0].version }}"
+
+- name: Check if subscription fix is already applied
+  ansible.builtin.command: grep -Fq 'if (res === null || res === undefined || !res || false) {' {{ proxmoxlib }}
+  register: check_fixed
+  failed_when: check_fixed.rc > 1
+  check_mode: false
+  ignore_errors: true
+  changed_when: false
+
+- name: Backup up original file
+  ansible.builtin.copy:
+    remote_src: true
+    src: "{{ proxmox_ve_lib_file }}"
+    dest: "{{ proxmox_ve_lib_file }}.bak-{{ proxmox_version }}"
+    force: false
+    mode: '0644'
+  when: check_fixed.rc == 1
+
+- name: Modify line which performs license check
+  ansible.builtin.replace:
+    path: "{{ proxmox_ve_lib_file }}"
+    regexp: res\s*\.data\.status\.toLowerCase\(\) !== 'active'
+    replace: "false"
+  notify:
+    - Restart pveproxy
+  when: check_fixed.rc == 1
+
+# https://johnscs.com/remove-proxmox51-subscription-notice/
+
+- name: Create DPKG Hooks
+  ansible.builtin.copy:
+    dest: "/etc/apt/apt.conf.d/66-pve-subscription"
+    content: |
+      DPkg::Pre-Install-Pkgs {
+          "while read -r pkg; do case $pkg in *proxmox-widget-toolkit* | *pve-manager*) touch /tmp/.pve-subscription && exit 0; esac done < /dev/stdin";
+      };
+
+      DPkg::Post-Invoke {
+          "[ -f /tmp/.pve-subscription ] && { /opt/pve-subscription.sh; rm -f /tmp/.pve-subscription; }; exit 0";
+      };
+    mode: '0644'
+
+- name: Create Hook Script
+  ansible.builtin.copy:
+    dest: "/opt/pve-subscription.sh"
+    content: |
+      SEARCH="data.status.toLowerCase() !== 'active'"
+      PVELIB="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
+
+      # Logic From: https://johnscs.com/remove-proxmox51-subscription-notice/
+
+      if grep -qs "${SEARCH}" "${PVELIB}" > /dev/null 2>&1; then
+        echo "$PVE-SUB: Removing Subscription Alert..."
+        perl -0pi.$(pveversion | cut -d\/ -f2) -e 's/res\n.*.data.status.toLowerCase.. !== .active./false/'
+        # sed -i.orig "s/${SEARCH}/false/g" "${PVELIB}"
+        # sed -Ezi.bak "s/(Ext.Msg.show\(\{\s+title: gettext\('No valid sub)/void\(\{ \/\/\1/g"
+        systemctl restart pveproxy.service
+      fi
+    mode: '0544'
